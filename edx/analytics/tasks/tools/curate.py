@@ -56,7 +56,7 @@ import gzip
 import json
 import os
 
-from edx.analytics.tasks.launchers.s3util import get_s3_files
+from edx.analytics.tasks.tools.s3util import get_s3_files
 
 
 def create_directory(output_dir):
