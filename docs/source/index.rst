@@ -15,6 +15,8 @@ This guide provides information about the tasks in the edX analytics pipeline.
 
    faq.rst	     
 
+   overview.rst
+
 ##############
 Indexes
 ##############
