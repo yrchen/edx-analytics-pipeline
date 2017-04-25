@@ -5,7 +5,7 @@ import unittest
 from ddt import ddt, data
 import luigi
 
-from edx.analytics.tasks.common.tests.map_reduce_mixins import MapperTestMixin
+from edx.analytics.tasks.common.tests.map_reduce_mixins import MapperTestMixin, ReducerTestMixin
 from edx.analytics.tasks.util.tests.opaque_key_mixins import InitializeOpaqueKeysMixin
 from edx.analytics.tasks.warehouse.load_internal_reporting_events import (
     EventRecord,
@@ -13,6 +13,9 @@ from edx.analytics.tasks.warehouse.load_internal_reporting_events import (
     SegmentEventRecordDataTask,
     VERSION,
 )
+
+
+from mock import patch, call
 
 
 @ddt
@@ -351,3 +354,253 @@ class SegmentEventRecordTaskMapTest(InitializeOpaqueKeysMixin, MapperTestMixin, 
             expected_key,
             expected_value
         )
+
+
+# TODO AZ Fix this Unit Test so that it passes
+@ddt
+class TrackingEventRecordMultipleOutputTaskMapTest(InitializeOpaqueKeysMixin, ReducerTestMixin, unittest.TestCase):
+    """Testing That Multiple Outputs are created, one for each event day"""
+
+    DEFAULT_USER_ID = 10
+    DEFAULT_TIMESTAMP1 = "2013-12-17T15:38:32.805444"
+    DEFAULT_TIMESTAMP2 = "2013-12-18T15:38:32.805444"
+    DEFAULT_DATE1 = "2013-12-17"
+    DEFAULT_DATE2 = "2013-12-18"
+
+    def setUp(self):
+        super(TrackingEventRecordMultipleOutputTaskMapTest, self).setUp()
+
+        patcher = patch('edx.analytics.tasks.common.mapreduce.get_target_from_url')
+        self.mock_get_target = patcher.start()
+
+        self.initialize_ids()
+        self.video_id = 'i4x-foo-bar-baz'
+        self.forum_id = 'a2cb123f9c2146f3211cdc6901acb00e'
+        self.event_templates = {
+            'problem_check': {
+                "username": "test_user",
+                "host": "test_host",
+                "event_source": "server",
+                "event_type": "problem_check",
+                "context": {
+                    "course_id": self.course_id,
+                    "org_id": self.org_id,
+                    "user_id": self.DEFAULT_USER_ID,
+                },
+                "time": "{0}+00:00".format(self.DEFAULT_TIMESTAMP1),
+                "ip": "127.0.0.1",
+                "event": {
+                    "problem_id": self.problem_id,
+                    "success": "incorrect",
+                },
+                "agent": "blah, blah, blah",
+                "page": None
+            },
+            'play_video': {
+                "username": "test_user",
+                "host": "test_host",
+                "event_source": "browser",
+                "name": "play_video",
+                "event_type": "play_video",
+                "context": {
+                    "course_id": self.course_id,
+                    "org_id": self.org_id,
+                    "user_id": self.DEFAULT_USER_ID,
+                    "path": "/event",
+                },
+                "time": "{0}+00:00".format(self.DEFAULT_TIMESTAMP2),
+                "ip": "127.0.0.1",
+
+                "accept_language": "en-us",
+                "event": "{\"code\": \"6FrbD6Ro5z8\", \"id\": \"01955efc9ba54c73a9aa7453a440cb06\", \"currentTime\": 630.437320479}",
+                "agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_10_5) AppleWebKit/600.8.9 (KHTML, like Gecko) Version/8.0.8 Safari/600.8.9",
+                "label": "course-v1:edX+DemoX+Demo_Course",
+                "session": "83ce3bd69f7fc3b72b3b9f2142a8cd09",
+                "referer": "long meaningful url",
+                "page": "long meaningful url",
+                "nonInteraction": 1,
+            },
+        }
+        self.default_event_template = 'problem_check'
+        self.create_task()
+
+    def create_task(self, date=None):  # pylint: disable=arguments-differ
+        """Allow arguments to be passed to the task constructor."""
+        if not date:
+            date = self.DEFAULT_DATE1
+        self.task = TrackingEventRecordDataTask(
+            date=luigi.DateParameter().parse(date),
+            output_root='/fake/output',
+        )
+        self.task.init_local()
+
+    def assert_values_written_to_file(self, key, values):
+        """A short-hand checker used to examine an output file.  """
+        self.assertItemsEqual(self.task.reducer(key, values), [])
+        _date, _project = key
+
+        self.mock_get_target.assert_called_once_with('/fake/output/event_records/dt={date}/{project}.tsv'
+                                                     .format(date=_date, project=_project))
+
+        # validate the data output in the files
+        # TODO AZ I'm not quite sure how to verify the data written to each file.  The calls here were copied from
+        # another multiple output test and I'm not sure what magic `call` actually does
+#         mock_target = self.mock_get_target.return_value
+#         mock_file = mock_target.open.return_value.__enter__.return_value
+#         mock_file.write.assert_has_calls([call(v + '\n') for v in values])
+        self.mock_get_target.reset_mock()
+
+
+    def test_reducer(self):
+        key1 = (self.DEFAULT_DATE1, 'foo')
+        key2 = (self.DEFAULT_DATE2, 'foo')
+        self.assert_values_written_to_file(key1, ['bar', 'baz'])
+        self.assert_values_written_to_file(key2, ['bar', 'baz'])
+
+
+# TODO AZ Fix this unit test so that it actually tests multiple dates and tests them correctly
+@ddt
+class SegmentEventRecordMultipleOutputTaskMapTest(InitializeOpaqueKeysMixin, ReducerTestMixin, unittest.TestCase):
+    """Base class for test analysis of detailed student engagement"""
+
+    DEFAULT_USER_ID = 10
+    DEFAULT_TIMESTAMP = "2013-12-17T15:38:32"
+    DEFAULT_DATE1 = "2013-12-17"
+    DEFAULT_ANONYMOUS_ID = "abcdef12-3456-789a-bcde-f0123456789a"
+    DEFAULT_PROJECT = "segment_test"
+
+    def setUp(self):
+        super(SegmentEventRecordMultipleOutputTaskMapTest, self).setUp()
+
+        patcher = patch('edx.analytics.tasks.common.mapreduce.get_target_from_url')
+        self.mock_get_target = patcher.start()
+
+        self.initialize_ids()
+        self.event_templates = {
+            'android_screen': {
+                "messageId": "fake_message_id",
+                "type": "screen",
+                "channel": "server",
+                "context": {
+                    "app": {
+                        "build": 82,
+                        "name": "edX",
+                        "namespace": "org.edx.mobile",
+                        "version": "2.3.0",
+                    },
+                    "traits": {
+                        "anonymousId": self.DEFAULT_ANONYMOUS_ID
+                    },
+                    "library": {
+                        "name": "analytics-android",
+                        "version": "3.4.0",
+                    },
+                    "os": {
+                        "name": "Android",
+                        "version": "5.1.1",
+                    },
+                    "timezone": "America/New_York",
+                    "screen": {
+                        "density": 3.5,
+                        "width": 1440,
+                        "height": 2560,
+                    },
+                    "userAgent": "Dalvik/2.1.0 (Linux; U; Android 5.1.1; SAMSUNG-SM-N920A Build/LMY47X)",
+                    "locale": "en-US",
+                    "device": {
+                        "id": "fake_device_id",
+                        "manufacturer": "samsung",
+                        "model": "SAMSUNG-SM-N920A",
+                        "name": "noblelteatt",
+                        "advertisingId": "fake_advertising_id",
+                        "adTrackingEnabled": False,
+                        "type": "android",
+                    },
+                    "network": {
+                        "wifi": True,
+                        "carrier": "AT&T",
+                        "bluetooth": False,
+                        "cellular": False,
+                    },
+                    "ip": "98.236.220.148"
+                },
+                "anonymousId": self.DEFAULT_ANONYMOUS_ID,
+                "integrations": {
+                    "All": True,
+                    "Google Analytics": False,
+                },
+                "category": "",
+                "name": "Launch",
+                "properties": {
+                    "data": {
+                    },
+                    "device-orientation": "portrait",
+                    "navigation-mode": "full",
+                    "context": {
+                        "app_name": "edx.mobileapp.android",
+                    },
+                    "category": "screen",
+                    "label": "Launch",
+                },
+                "writeKey": "dummy_write_key",
+                "projectId": self.DEFAULT_PROJECT,
+                "timestamp": "{0}.796Z".format(self.DEFAULT_TIMESTAMP),
+                "sentAt": "{0}.000Z".format(self.DEFAULT_TIMESTAMP),
+                "receivedAt": "{0}.796Z".format(self.DEFAULT_TIMESTAMP),
+                "originalTimestamp": "{0}-0400".format(self.DEFAULT_TIMESTAMP),
+                "version": 2,
+            }
+        }
+        self.default_event_template = 'android_screen'
+        self.create_task()
+
+    def create_task(self, date=None):  # pylint: disable=arguments-differ
+        """Allow arguments to be passed to the task constructor."""
+        if not date:
+            date = self.DEFAULT_DATE1
+        self.task = SegmentEventRecordDataTask(
+            date=luigi.DateParameter().parse(date),
+            output_root='/fake/output',
+        )
+        self.task.init_local()
+
+
+    def _get_event_record_from_mapper(self, kwargs):
+        """Returns an EventRecord constructed from mapper output."""
+        line = self.create_event_log_line(**kwargs)
+        mapper_output = tuple(self.task.mapper(line))
+        self.assertEquals(len(mapper_output), 1)
+        row = mapper_output[0]
+        self.assertEquals(len(row), 2)
+        _actual_key, actual_value = row
+        return EventRecord.from_tsv(actual_value)
+
+# This code is copied & commented out from the Segment Event Mapper Test section above
+    # @data(
+    #     {'sentAt': '2016-7-26T13:26:23-0500'},
+    #     {'sentAt': '2016-07-26T13:34:0026-0400'},
+    #     {'sentAt': '2016-0007-29T12:15:34+0530'},
+    #     {'sentAt': '2016-07-26 05:11:37 a.m. +0000'},
+    # )
+    # def test_funky_but_parsable_timestamps(self, kwargs):
+    #     actual_record = self._get_event_record_from_mapper(kwargs)
+    #     timestamp = getattr(actual_record, 'timestamp')
+    #     self.assertNotEquals(timestamp, None)
+
+    def assert_values_written_to_file(self, key, values):
+        """A short-hand checker used to examine an output file.  """
+        self.assertItemsEqual(self.task.reducer(key, values), [])
+        _date, _project = key
+
+        self.mock_get_target.assert_called_once_with('/fake/output/event_records/dt={date}/{project}.tsv'
+                                                 .format(date=_date, project=_project))
+
+        # validate the data output in the files
+# TODO AZ I'm not quite sure how to verify the data written to each file.
+        self.mock_get_target.reset_mock()
+
+
+    def test_reducer(self):
+        key1 = (self.DEFAULT_DATE1, 'foo')
+        self.assert_values_written_to_file(key1, ['bar', 'baz'])
+

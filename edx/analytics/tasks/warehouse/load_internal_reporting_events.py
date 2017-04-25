@@ -457,15 +457,11 @@ class BaseEventRecordDataTask(EventRecordDataDownstreamMixin, MultiOutputMapRedu
         # is no reason to sort by date_received.
         _date_received, project = key
 
-        # return url_path_join(
-        #     self.output_root,
-        #     'event_records',
-        #     'dt={date}'.format(date=date_received),
-        #     '{project}.tsv'.format(project=project),
-        # )
         return url_path_join(
             self.output_root,
-            '{project}.tsv'.format(project=project),
+            'event_records',
+            'dt={date}'.format(date=_date_received),
+            '{project}.tsv'.format(project=project)
         )
 
     def extra_modules(self):
