@@ -1,7 +1,9 @@
 import csv
 import datetime
+import dateutil.parser
 import json
 import logging
+import pytz
 from Queue import PriorityQueue, Queue
 import requests
 import time
@@ -14,10 +16,28 @@ from sailthru.sailthru_client import SailthruClient
 
 from edx.analytics.tasks.util.hive import HivePartition, WarehouseMixin
 from edx.analytics.tasks.util.overwrite import OverwriteOutputMixin
-from edx.analytics.tasks.util.record import Record, StringField, IntegerField
+from edx.analytics.tasks.util.record import Record, StringField, IntegerField, DateTimeField
 from edx.analytics.tasks.util.url import get_target_from_url, url_path_join
 
 log = logging.getLogger(__name__)
+
+
+def get_datetime_from_sailthru(datetime_string):
+    """Convert datetime info from Sailthru APIs into UTC datetime objects.
+
+    Sailthru dates are either of the form:
+       datetime_format = '%a, %d %b %Y %H:%M:%S -0400'
+    or:
+       datetime_format = '%Y-%m-%d %H:%M:%S'
+
+    The latter lack timezone information, but are UTC.
+    """
+    dt = dateutil.parser.parse(datetime_string)
+    # if naive, then assume that it's UTC.
+    if dt.tzinfo:
+        return dt.astimezone(pytz.utc)
+    else:
+        return dt.replace(tzinfo=pytz.utc)
 
 
 class PullFromSailthruTaskMixin(OverwriteOutputMixin):
@@ -44,7 +64,7 @@ class PullFromSailthruTaskMixin(OverwriteOutputMixin):
 
 class DailyPullFromSailthruTask(PullFromSailthruTaskMixin, luigi.Task):
     """
-    A task that reads out of a remote Sailthru account and writes to a file.
+    A task that fetches daily Sailthru blast information and writes to a file.
 
     """
     # Date to fetch Sailthru report.
@@ -84,7 +104,13 @@ class DailyPullFromSailthruTask(PullFromSailthruTaskMixin, luigi.Task):
                 output_file.write('\n')
 
     def output(self):
-        """Output is in the form {output_root}/sailthru_raw/{CCYY-mm}/sailthru_blast_{CCYYmmdd}.json"""
+        """Output is NO LONGER in the form {output_root}/sailthru_raw/{CCYY-mm}/sailthru_blast_{CCYYmmdd}.json.
+
+        Instead, we write to {output_root}/sailthru_raw/sailthru_blast_{CCYYmmdd}_{CCYY-mm-dd-CCYY-mm-dd}.json.
+        At some point, we may clone this to generate an incrmental output *and* a complete output.  The former
+        would be used for finding blast_ids to fetch email addresses for.  The latter would be used for fetching
+        blast statistics.
+        """
         # month_year_string = self.run_date.strftime('%Y-%m')  # pylint: disable=no-member
         requesting_date_string = self.run_date.strftime('%Y%m%d')  # pylint: disable=no-member
         filename = "sailthru_{type}_{date_string}_{interval}.{report_format}".format(
@@ -99,13 +125,14 @@ class DailyPullFromSailthruTask(PullFromSailthruTaskMixin, luigi.Task):
 
 
 class SailthruBlastStatsRecord(Record):
+    # TODO: update descriptions.
     blast_id = IntegerField(nullable=False, description='Blast identifier.')
     email_subject = StringField(length=564, nullable=False, description='Blast identifier.')
     email_list = StringField(length=564, nullable=False, description='Blast identifier.')
     email_campaign_name = StringField(length=564, nullable=False, description='Blast identifier.')
     email_abtest_name = StringField(length=564, nullable=True, description='Blast identifier.')
     email_abtest_segment = StringField(length=564, nullable=True, description='Blast identifier.')
-    email_start_time = StringField(length=564, nullable=False, description='Blast identifier.')
+    email_start_time = DateTimeField(nullable=False, description='Blast identifier.')
     email_sent_cnt = IntegerField(nullable=False, description='Blast identifier.')
     email_unsubscribe_cnt = IntegerField(nullable=False, description='Blast identifier.')
     email_open_cnt = IntegerField(nullable=False, description='Blast identifier.')
@@ -122,9 +149,6 @@ class DailyStatsFromSailthruTask(PullFromSailthruTaskMixin, luigi.Task):
     run_date = luigi.DateParameter(
         default=datetime.date.today(),
         description='Date to fetch Sailthru report. Default is today.',
-    )
-    output_root = luigi.Parameter(
-        description='URL of location to write output.',
     )
 
     def requires(self):
@@ -161,8 +185,11 @@ class DailyStatsFromSailthruTask(PullFromSailthruTaskMixin, luigi.Task):
             output_entry['email_campaign_name'] = blast.get('name')
             output_entry['email_abtest_name'] = blast.get('abtest')
             output_entry['email_abtest_segment'] = blast.get('abtest_segment')
-            output_entry['email_start_time'] = blast.get('start_time')
-
+            start_time_string = blast.get('start_time')
+            if start_time_string:
+                output_entry['email_start_time'] = get_datetime_from_sailthru(start_time_string)
+            else:
+                output_entry['email_start_time'] = None
             stats = blast.get('stats', {}).get('total', {})
             # ISSUE: don't these change over time?  And if so, do we need separate entries for them, by date when
             # they were fetched?
@@ -181,8 +208,13 @@ class DailyStatsFromSailthruTask(PullFromSailthruTaskMixin, luigi.Task):
         """
         Output is set up so it can be read in as a Hive table with partitions.
 
-        The form is {output_root}/sailthru_blast_stats/dt={CCYY-mm-dd}/sailthru_blast.tsv
+        The form should eventually be {output_root}/sailthru_blast_stats/dt={CCYY-mm-dd}/sailthru_blast.tsv.
+
+        For now it is {output_root}/sailthru_blast_stats/sailthru_blast.tsv, where the date is included
+        as part of output_root.  This was just a shortcut.
         """
+        # TODO:  At some point, restore this so that output_root no longer needs today's date,
+        # and can again be warehouse_path or its replacement.
         # date_string = self.run_date.strftime('%Y-%m-%d')  # pylint: disable=no-member
         # partition_path_spec = HivePartition('dt', date_string).path_spec
         filename = "sailthru_blast.tsv"
@@ -193,15 +225,15 @@ class DailyStatsFromSailthruTask(PullFromSailthruTaskMixin, luigi.Task):
 
 class RequestEmailInfoPerBlastFromSailthruTask(PullFromSailthruTaskMixin, luigi.Task):
     """
-    A task that reads a local file generated from a daily Sailthru pull, and writes to a TSV file.
+    A task that reads in a list of blast IDs, and creates a list of job IDs for requests for blast info.
 
-    FIXME: The output file should NOT be readable by Hive.
-
+    A separate job will read the list of job IDs and monitor their progress.
     """
 
-    output_root = luigi.Parameter(
-        description='URL of location to write output.',
-    )
+    # Choose a value that exceeds the maximum number of recipients of a blast.
+    # This is used to reverse the order of blasts by send_cnt, though were it negative,
+    # it would probably work as well.
+    MAX_COUNT = 100000000
 
     def requires(self):
         args = {
@@ -246,13 +278,13 @@ class RequestEmailInfoPerBlastFromSailthruTask(PullFromSailthruTaskMixin, luigi.
                 for blast in blasts:
                     blast_id = blast.get('blast_id')  # or 'final_blast_id'?  Looks like copy_blast_id is different.
                     stats = blast.get('stats', {}).get('total', {})
-                    sent_cnt = stats.get('count', 0)
+                    sent_count = stats.get('count', 0)
                     # Insert blasts in reverse order by size, so that the biggest blasts
                     # will be pulled first.
-                    priority = 100000000 - sent_cnt
+                    priority = self.MAX_COUNT - sent_count
                     data = {
                         'blast_id': blast_id,
-                        'sent_cnt': sent_cnt,
+                        'sent_count': sent_count,
                     }
                     schedule_queue.put((priority, data))
 
@@ -264,17 +296,15 @@ class RequestEmailInfoPerBlastFromSailthruTask(PullFromSailthruTaskMixin, luigi.
             priority, data = item
             print "Scheduling:  priority '{}' data '{}'".format(priority, data)
             blast_id = data.get('blast_id')
-            sent_cnt = data.get('sent_cnt', 0)
-            # FOR NOW, just skip big jobs, for testing.
-            if sent_cnt > 100:
-                continue
+            sent_count = data.get('sent_count', 0)
+            # For testing, comment this out to skip over bigger jobs.
+            # if sent_count > 10000:
+            #     continue
             job_status = self.submit_blast_query_request(blast_id)
             job_id = job_status.get('job_id')
-            submit_time = datetime.datetime.now()
+            submit_time = datetime.datetime.utcnow()
             start_time_string = job_status.get('start_time')
             if start_time_string:
-                # start_time = self.get_datetime(start_time_string)
-                # estimated_end_time = self.get_estimated_end_time(start_time, sent_cnt)
                 # TODO: Figure out if this ever happens.  It may be that such jobs start, but never right away.
                 print "Job {} (blast {}) began execution at {}".format(job_id, blast_id, start_time_string)
             else:
@@ -282,13 +312,10 @@ class RequestEmailInfoPerBlastFromSailthruTask(PullFromSailthruTaskMixin, luigi.
             data = {
                 'job_id': job_id,
                 'blast_id': blast_id,
-                'sent_cnt': sent_cnt,
+                'sent_count': sent_count,
                 'submit_time': submit_time.isoformat(),
                 'start_time': start_time_string,
-                # 'estimated_end_time': estimated_end_time,
             }
-            # priority = self.get_timestamp(estimated_end_time)
-            # print "Queuing up:  priority '{}' data '{}'".format(priority, data)
             queue.put(data)
 
         # Now everything is queued, so wait for each job to finish, in the order
@@ -301,9 +328,12 @@ class RequestEmailInfoPerBlastFromSailthruTask(PullFromSailthruTaskMixin, luigi.
 
     def output(self):
         """
-        Output is set up so it can be read in as a Hive table with partitions.
+        Output is a log file, listing job IDs for requests for email information about blasts.
 
-        FIXME: The form is NOT {output_root}/sailthru_blast_stats/dt={CCYY-mm-dd}/sailthru_blast.tsv
+        The form is {output_root}/sailthru_blast_email_jobs/sailthru_blast_email_jobs.log
+
+        At some point, this may be made incremental, so that we only pull blast emails for
+        the most recent blasts.
         """
         # date_string = self.run_date.strftime('%Y-%m-%d')  # pylint: disable=no-member
         # partition_path_spec = HivePartition('dt', date_string).path_spec
@@ -313,17 +343,45 @@ class RequestEmailInfoPerBlastFromSailthruTask(PullFromSailthruTaskMixin, luigi.
         return get_target_from_url(url_with_filename)
 
 
+class SailthruBlastEmailRecord(Record):
+    # TODO: update descriptions.
+    blast_id = IntegerField(nullable=False, description='Blast identifier.')
+    email_hash = StringField(length=564, nullable=False, description='Blast identifier.')
+    profile_id = StringField(length=564, nullable=False, description='Blast identifier.')
+    send_time = DateTimeField(nullable=False, description='Blast identifier.')
+    open_time = DateTimeField(nullable=True, description='Blast identifier.')
+    click_time = DateTimeField(nullable=True, description='Blast identifier.')
+    purchase_time = DateTimeField(nullable=True, description='Blast identifier.')
+    device = StringField(length=564, nullable=True, description='Blast identifier.')
+    # This can get very long, as urls are appended, delimited by a space.  Skipping for now.
+    # first_ten_clicks = StringField(length=564, nullable=True, description='Blast identifier.')
+    # This comes in with more than one datetime, pipe-delimited.  Not sure how to store it, so just skipping it.
+    # first_ten_clicks_time = DateTimeField(nullable=True, description='Blast identifier.')
+
+
 class EmailInfoPerBlastFromSailthruTask(PullFromSailthruTaskMixin, luigi.Task):
     """
-    FIXME: A task that reads a local file generated from a daily Sailthru pull, and writes to a TSV file.
+    A task that polls a job ID to see if email information about a blast is ready, and writes to a TSV file.
 
-    The output file should be readable by Hive.
+    The output file should be readable by Hive, and structured according to SailthruBlastEmailRecord.
 
     """
 
-    output_root = luigi.Parameter(
-        description='URL of location to write output.',
-    )
+    # The polling interval depends on how long we think the request will take.
+    # In particular, blasts with more email addresses take longer to process.
+    # Assume a rate of 200 per second.  This is a little high, but should work well enough for
+    # an initial setting, to allow for later tuning.   This can eventually be made a parameter.
+    EMAILS_LOGGED_PER_SECOND = 200
+
+    # Based on a guess at the overall duration, set the polling interval so there
+    # are about 20 polls before the request should complete.
+    POLLS_PER_ESTIMATED_DURATION = 20
+
+    # We don't need micro-second polling, so set a reasonable minimum, in seconds.
+    MINIMUM_POLLING_INTERVAL = 10
+
+    # Number of times to poll before giving up.
+    MAXIMUM_NUMBER_OF_RETRIES = 60
 
     def requires(self):
         args = {
@@ -338,47 +396,59 @@ class EmailInfoPerBlastFromSailthruTask(PullFromSailthruTaskMixin, luigi.Task):
     def run(self):
         # Read from input and reformat for output.
         self.remove_output_on_overwrite()
+        if self.overwrite:
+            # remove the output directory, not just the marker file.
+            output_target = self.output()
+            if not self.complete() and output_target.exists():
+                output_target.remove()
 
         self.sailthru_client = SailthruClient(self.api_key, self.api_secret)
 
-        with self.output().open('w') as output_file:
-            # Wait for each job to finish, in the order that they were originally queued, FIFO.
-            with self.input().open('r') as input_file:
-                for line in input_file:
-                    data = json.loads(line)
-                    output_url = self.get_output_url_from_blast_query(data)
-                    blast_id = data.get('blast_id')
+        # Wait for each job to finish, in the order that they were originally queued, FIFO.
+        with self.input().open('r') as input_file:
+            for line in input_file:
+                data = json.loads(line)
+                output_url = self.get_output_url_from_blast_query(data)
+                blast_id = data.get('blast_id')
+                output_filename = 'sailthru_emails_blast_{}.tsv'.format(blast_id)
+                output_path = url_path_join(self.output_root, 'sailthru_blast_emails', output_filename)
+                output_target = get_target_from_url(output_path)
+                with output_target.open('w') as output_file:
                     reader = self.get_output_reader(output_url)
                     for output_row in reader:
-                        output_line = "{}\t{}\n".format(blast_id, output_row.get('email hash'))
-                        output_file.write(output_line)
+                        output_entry = {'blast_id': blast_id, 'email_hash': output_row.get('email hash')}
+                        for key in ['profile_id', 'device']:
+                            value = output_row.get(key)
+                            if value:
+                                output_entry[key] = value
+                            else:
+                                output_entry[key] = None
+                        for key in ['send_time', 'open_time', 'click_time', 'purchase_time']:
+                            datetime_string = output_row.get(key)
+                            if datetime_string:
+                                output_entry[key] = get_datetime_from_sailthru(datetime_string)
+                            else:
+                                output_entry[key] = None
+                        record = SailthruBlastEmailRecord(**output_entry)
+                        output_file.write(record.to_separated_values())
+                        output_file.write('\n')
 
-    def get_datetime(self, datetime_string):
-        # Note that the times are local, and we're hardcoding the timezone, because
-        # %z doesn't work.
-        datetime_format = '%a, %d %b %Y %H:%M:%S -0400'
-        return datetime.datetime.strptime(datetime_string, datetime_format)
+    def get_estimated_duration(self, sent_count):
+        num_seconds = sent_count / self.EMAILS_LOGGED_PER_SECOND
+        return num_seconds
 
-    def get_estimated_end_time(self, start_time, sent_cnt):
-        num_seconds = self.get_estimated_duration(sent_cnt)
+    def get_polling_interval(self, sent_count):
+        num_seconds = self.get_estimated_duration(sent_count)
+        poll_seconds = num_seconds / self.POLLS_PER_ESTIMATED_DURATION
+        if poll_seconds < self.MINIMUM_POLLING_INTERVAL:
+            poll_seconds = self.MINIMUM_POLLING_INTERVAL
+        return poll_seconds
+
+    def get_estimated_end_time(self, start_time, sent_count):
+        num_seconds = self.get_estimated_duration(sent_count)
         delta = datetime.timedelta(0, num_seconds, 0)
         estimated_end_time = start_time + delta
         return estimated_end_time
-
-    def get_estimated_duration(self, sent_cnt):
-        num_seconds = sent_cnt / 400
-        return num_seconds
-    
-    def get_timestamp(self, date_time):
-        timestamp = (date_time - datetime.datetime(1970, 1, 1)).total_seconds()
-        return timestamp
-
-    def get_polling_interval(self, sent_cnt):
-        num_seconds = self.get_estimated_duration(sent_cnt)
-        poll_seconds = num_seconds / 20
-        if poll_seconds < 10:
-            poll_seconds = 10
-        return poll_seconds
 
     def get_output_url_from_blast_query(self, data):
         print "Waiting for completion:  data '{}'".format(data)
@@ -386,7 +456,7 @@ class EmailInfoPerBlastFromSailthruTask(PullFromSailthruTaskMixin, luigi.Task):
         output_lines = []
         job_id = data.get('job_id')
         blast_id = data.get('blast_id')
-        sent_cnt = data.get('sent_cnt')
+        sent_count = data.get('sent_count')
         
         job_response = self.sailthru_client.api_get('job', {'type': 'status', 'job_id': job_id})
         if not job_response.is_ok():
@@ -396,12 +466,9 @@ class EmailInfoPerBlastFromSailthruTask(PullFromSailthruTaskMixin, luigi.Task):
             raise Exception(msg)
         job_status = job_response.get_body()
         retry_count = 0
-
-        # TODO: Maybe the polling should depend on how long we think the request will take.
-        # In particular, perhaps blasts with more email addresses will take longer to process.
-        poll_seconds = self.get_polling_interval(sent_cnt)
+        poll_seconds = self.get_polling_interval(sent_count)
         print "Polling every {} seconds...".format(poll_seconds)
-        while job_status.get('status') == 'pending' and retry_count < 60:
+        while job_status.get('status') == 'pending' and retry_count < self.MAXIMUM_NUMBER_OF_RETRIES:
             time.sleep(poll_seconds)
             job_id = job_status.get('job_id')
             job_response = self.sailthru_client.api_get('job', {'type': 'status', 'job_id': job_id})
@@ -422,13 +489,14 @@ class EmailInfoPerBlastFromSailthruTask(PullFromSailthruTaskMixin, luigi.Task):
 
         # If we get here, we assume the request completed.
         start_time_string = job_status.get('start_time')
-        start_time = self.get_datetime(start_time_string)
+        start_time = get_datetime_from_sailthru(start_time_string)
         end_time_string = job_status.get('end_time')
-        end_time = self.get_datetime(end_time_string)
-        estimated_end_time = self.get_estimated_end_time(start_time, send_cnt)
+        end_time = get_datetime_from_sailthru(end_time_string)
+        estimated_end_time = self.get_estimated_end_time(start_time, sent_count)
+        duration = end_time - start_time
         end_diff = end_time - estimated_end_time
-        print "Found completion for job '{}' blast '{}' count {}:  start {} estimated {} actual {} diff '{}'".format(
-            job_id, blast_id, sent_cnt, start_time, estimated_end_time, end_time, end_diff
+        print "Found completion for job '{}' blast '{}' count {}:  start {} estimated {} actual {} duration {} diff '{}'".format(
+            job_id, blast_id, sent_count, start_time, estimated_end_time, end_time, duration, end_diff
         )
 
         # Depending on when this is run, it's possible that the output from the original job has expired.
@@ -460,10 +528,17 @@ class EmailInfoPerBlastFromSailthruTask(PullFromSailthruTaskMixin, luigi.Task):
         """
         # date_string = self.run_date.strftime('%Y-%m-%d')  # pylint: disable=no-member
         # partition_path_spec = HivePartition('dt', date_string).path_spec
-        filename = "sailthru_blast_emails.tsv"
+        # filename = "sailthru_blast_emails.tsv"
         # url_with_filename = url_path_join(self.output_root, "sailthru_blast_stats", partition_path_spec, filename)
-        url_with_filename = url_path_join(self.output_root, "sailthru_blast_emails", filename)
-        return get_target_from_url(url_with_filename)
+        # url_with_filename = url_path_join(self.output_root, "sailthru_blast_emails", filename)
+        # return get_target_from_url(url_with_filename)
+        output_url = url_path_join(self.output_root, "sailthru_blast_emails/")
+        return get_target_from_url(output_url, marker=True)
+
+    def on_success(self):  # pragma: no cover
+        """Overload the success method to touch the _SUCCESS file.  Any class that uses a separate Marker file from the
+        data file will need to override the base on_success() call to create this marker."""
+        self.output().touch_marker()
 
 
 class IntervalPullFromSailthruTask(PullFromSailthruTaskMixin, WarehouseMixin, luigi.WrapperTask):
