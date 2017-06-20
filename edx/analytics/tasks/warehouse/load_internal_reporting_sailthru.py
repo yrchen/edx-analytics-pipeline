@@ -68,10 +68,10 @@ class DailyPullFromSailthruTask(PullFromSailthruTaskMixin, luigi.Task):
 
     """
     # Date to fetch Sailthru report.
-    run_date = luigi.DateParameter(
-        default=datetime.date.today(),
-        description='Default is today.',
-    )
+    # run_date = luigi.DateParameter(
+    #     default=datetime.date.today(),
+    #     description='Default is today.',
+    # )
 
     REPORT_FORMAT = 'json'
 
@@ -112,10 +112,10 @@ class DailyPullFromSailthruTask(PullFromSailthruTaskMixin, luigi.Task):
         blast statistics.
         """
         # month_year_string = self.run_date.strftime('%Y-%m')  # pylint: disable=no-member
-        requesting_date_string = self.run_date.strftime('%Y%m%d')  # pylint: disable=no-member
-        filename = "sailthru_{type}_{date_string}_{interval}.{report_format}".format(
+        # requesting_date_string = self.run_date.strftime('%Y%m%d')  # pylint: disable=no-member
+        filename = "sailthru_{type}_{interval}.{report_format}".format(
             type='blast',
-            date_string=requesting_date_string,
+            # date_string=requesting_date_string,
             interval=str(self.interval),
             report_format=self.REPORT_FORMAT,
         )
@@ -146,10 +146,10 @@ class DailyStatsFromSailthruTask(PullFromSailthruTaskMixin, luigi.Task):
     The output file should be readable by Hive.
 
     """
-    run_date = luigi.DateParameter(
-        default=datetime.date.today(),
-        description='Date to fetch Sailthru report. Default is today.',
-    )
+    # run_date = luigi.DateParameter(
+    #     default=datetime.date.today(),
+    #     description='Date to fetch Sailthru report. Default is today.',
+    # )
 
     def requires(self):
         args = {
@@ -281,7 +281,14 @@ class RequestEmailInfoPerBlastFromSailthruTask(PullFromSailthruTaskMixin, luigi.
                     sent_count = stats.get('count', 0)
                     # Insert blasts in reverse order by size, so that the biggest blasts
                     # will be pulled first.
-                    priority = self.MAX_COUNT - sent_count
+                    # priority = self.MAX_COUNT - sent_count
+                    # NOPE.  Problem with that is because the large jobs take so long,
+                    # the export_url links for smaller jobs expire while the task is waiting
+                    # for the larger jobs to finish.  With an expiration of 24 hours we wouldn't
+                    # need to do this.  But expiration seemed to take place after 2 hours.
+                    # On the other hand, if outputting the results for a blast take anywhere near
+                    # two hours (e.g. for the larger jobs), then we're doomed either way.
+                    priority = sent_count
                     data = {
                         'blast_id': blast_id,
                         'sent_count': sent_count,
@@ -347,12 +354,16 @@ class SailthruBlastEmailRecord(Record):
     # TODO: update descriptions.
     blast_id = IntegerField(nullable=False, description='Blast identifier.')
     email_hash = StringField(length=564, nullable=False, description='Blast identifier.')
-    profile_id = StringField(length=564, nullable=False, description='Blast identifier.')
-    send_time = DateTimeField(nullable=False, description='Blast identifier.')
-    open_time = DateTimeField(nullable=True, description='Blast identifier.')
-    click_time = DateTimeField(nullable=True, description='Blast identifier.')
-    purchase_time = DateTimeField(nullable=True, description='Blast identifier.')
-    device = StringField(length=564, nullable=True, description='Blast identifier.')
+
+    # These are not needed right now, and it may end up slowing down our output.
+    # So commenting these out for now to speed up output.
+    # profile_id = StringField(length=564, nullable=False, description='Blast identifier.')
+    # send_time = DateTimeField(nullable=False, description='Blast identifier.')
+    # open_time = DateTimeField(nullable=True, description='Blast identifier.')
+    # click_time = DateTimeField(nullable=True, description='Blast identifier.')
+    # purchase_time = DateTimeField(nullable=True, description='Blast identifier.')
+    # device = StringField(length=564, nullable=True, description='Blast identifier.')
+
     # This can get very long, as urls are appended, delimited by a space.  Skipping for now.
     # first_ten_clicks = StringField(length=564, nullable=True, description='Blast identifier.')
     # This comes in with more than one datetime, pipe-delimited.  Not sure how to store it, so just skipping it.
@@ -404,34 +415,50 @@ class EmailInfoPerBlastFromSailthruTask(PullFromSailthruTaskMixin, luigi.Task):
 
         self.sailthru_client = SailthruClient(self.api_key, self.api_secret)
 
+        number_of_failures = 0
         # Wait for each job to finish, in the order that they were originally queued, FIFO.
         with self.input().open('r') as input_file:
             for line in input_file:
                 data = json.loads(line)
                 output_url = self.get_output_url_from_blast_query(data)
                 blast_id = data.get('blast_id')
-                output_filename = 'sailthru_emails_blast_{}.tsv'.format(blast_id)
+                if output_url:
+                    output_filename = 'sailthru_emails_blast_{}.tsv'.format(blast_id)
+                else:
+                    # If it failed to return a URL, just output a file with an appropriate
+                    # name and continue on.  We raise a failure at the very
+                    # end, however, to indicate that the job failed.
+                    number_of_failures += 1
+                    output_filename = 'sailthru_emails_blast_{}.failure'.format(blast_id)
                 output_path = url_path_join(self.output_root, 'sailthru_blast_emails', output_filename)
                 output_target = get_target_from_url(output_path)
                 with output_target.open('w') as output_file:
-                    reader = self.get_output_reader(output_url)
+                    if output_url:
+                        reader = self.get_output_reader(output_url)
+                    else:
+                        reader = []
                     for output_row in reader:
                         output_entry = {'blast_id': blast_id, 'email_hash': output_row.get('email hash')}
-                        for key in ['profile_id', 'device']:
-                            value = output_row.get(key)
-                            if value:
-                                output_entry[key] = value
-                            else:
-                                output_entry[key] = None
-                        for key in ['send_time', 'open_time', 'click_time', 'purchase_time']:
-                            datetime_string = output_row.get(key)
-                            if datetime_string:
-                                output_entry[key] = get_datetime_from_sailthru(datetime_string)
-                            else:
-                                output_entry[key] = None
+                        # for key in ['profile_id', 'device']:
+                        #     value = output_row.get(key)
+                        #     if value:
+                        #         output_entry[key] = value
+                        #     else:
+                        #         output_entry[key] = None
+                        # for key in ['send_time', 'open_time', 'click_time', 'purchase_time']:
+                        #     datetime_string = output_row.get(key)
+                        #     if datetime_string:
+                        #         output_entry[key] = get_datetime_from_sailthru(datetime_string)
+                        #     else:
+                        #         output_entry[key] = None
                         record = SailthruBlastEmailRecord(**output_entry)
                         output_file.write(record.to_separated_values())
                         output_file.write('\n')
+
+        # We do as much as possible (while we're still trying to get this to run) above, and then fail here.
+        if number_of_failures > 0:
+            msg = "Failed to find export_url: {} times".format(number_of_failures)
+            raise Exception(msg)
 
     def get_estimated_duration(self, sent_count):
         num_seconds = sent_count / self.EMAILS_LOGGED_PER_SECOND
@@ -503,9 +530,12 @@ class EmailInfoPerBlastFromSailthruTask(PullFromSailthruTaskMixin, luigi.Task):
         export_url = job_status.get('export_url')
         if not export_url:
             msg = "Failed to find export_url:  encountered status {} on blast_query request to Sailthru for job {} blast_id {} end_time {} expired {}".format(
-                job_status.get('status'), job_id, blast_id, end_time.isoformat(), job_stats.get('expired'),
+                job_status.get('status'), job_id, blast_id, end_time.isoformat(), job_status.get('expired'),
             )
-            raise Exception(msg)
+            # For now, avoid failing here, and instead let it do as much as it can so we can analyze the problem.
+            # (For example, it seems to expire links after two hours, instead of 24 hours as documented.)
+            # raise Exception(msg)
+            print msg
         
         return export_url
     
@@ -567,7 +597,8 @@ class IntervalPullFromSailthruTask(PullFromSailthruTaskMixin, WarehouseMixin, lu
         # Provide default for output_root at this level.
         if self.output_root is None:
             # self.output_root = self.warehouse_path
-            date_string = datetime.datetime.utcnow().date().isoformat()
+            # date_string = datetime.datetime.utcnow().date().isoformat()
+            date_string = self.interval_end.isoformat()
             partition_path_spec = HivePartition('dt', date_string).path_spec
             self.output_root = url_path_join(self.warehouse_path, partition_path_spec)
             
