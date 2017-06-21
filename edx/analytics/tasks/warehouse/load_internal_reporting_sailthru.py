@@ -6,17 +6,17 @@ import logging
 import pytz
 from Queue import PriorityQueue, Queue
 import requests
-import time
 from StringIO import StringIO
+import time
 
 import luigi
-# from luigi.configuration import get_config
 from luigi import date_interval
 from sailthru.sailthru_client import SailthruClient
 
 from edx.analytics.tasks.util.hive import HivePartition, WarehouseMixin
 from edx.analytics.tasks.util.overwrite import OverwriteOutputMixin
 from edx.analytics.tasks.util.record import Record, StringField, IntegerField, DateTimeField
+from edx.analytics.tasks.util.retry import retry
 from edx.analytics.tasks.util.url import get_target_from_url, url_path_join
 
 log = logging.getLogger(__name__)
@@ -539,6 +539,7 @@ class EmailInfoPerBlastFromSailthruTask(PullFromSailthruTaskMixin, luigi.Task):
         
         return export_url
     
+    @retry(timeout=30)
     def get_output_reader(self, export_url):
         # Now fetch the contents, and parse.
         response = requests.get(export_url)
