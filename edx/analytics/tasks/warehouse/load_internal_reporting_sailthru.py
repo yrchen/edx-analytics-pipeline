@@ -74,6 +74,7 @@ class DailyPullFromSailthruTask(PullFromSailthruTaskMixin, luigi.Task):
     # )
 
     REPORT_FORMAT = 'json'
+    MAX_NUM_BLASTS = 200
 
     def requires(self):
         pass
@@ -90,6 +91,7 @@ class DailyPullFromSailthruTask(PullFromSailthruTaskMixin, luigi.Task):
                     'status': 'sent',
                     'start_date': requested_date.isoformat(),
                     'end_date': end_date.isoformat(),
+                    'limit': self.MAX_NUM_BLASTS,
                 }
                 response = sailthru_client.api_get('blast', request_data)
                 
@@ -434,7 +436,13 @@ class EmailInfoPerBlastFromSailthruTask(PullFromSailthruTaskMixin, luigi.Task):
                 output_target = get_target_from_url(output_path)
                 with output_target.open('w') as output_file:
                     if output_url:
-                        reader = self.get_output_reader(output_url)
+                        try:
+                            reader = self.get_output_reader(output_url)
+                        except Exception as exc:
+                            # For now, we will skip these failures, and just move on to see
+                            # how far we get.
+                            print "Unable to access output_url '{}' : {}".format(output_url, exc)
+                            reader = []
                     else:
                         reader = []
                     for output_row in reader:
@@ -539,7 +547,7 @@ class EmailInfoPerBlastFromSailthruTask(PullFromSailthruTaskMixin, luigi.Task):
         
         return export_url
     
-    @retry(timeout=30)
+    @retry(timeout=520)
     def get_output_reader(self, export_url):
         # Now fetch the contents, and parse.
         response = requests.get(export_url)
