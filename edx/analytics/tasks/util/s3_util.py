@@ -145,4 +145,6 @@ class S3HdfsTarget(HdfsTarget):
             return super(S3HdfsTarget, self).open(mode=mode)
         else:
             safe_path = self.path.replace('s3n://', 's3://')
+            if not hasattr(self, 's3_client'):
+                self.s3_client = S3Client()
             return AtomicS3File(safe_path, self.s3_client, policy=DEFAULT_KEY_ACCESS_POLICY)
