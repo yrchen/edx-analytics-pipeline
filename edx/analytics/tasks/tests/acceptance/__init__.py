@@ -7,7 +7,7 @@ import shutil
 import unittest
 import csv
 
-from luigi.s3 import S3Client
+from luigi.contrib.s3 import S3Client
 import pandas
 from pandas.util.testing import assert_frame_equal, assert_series_equal
 
