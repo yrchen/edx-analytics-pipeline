@@ -8,7 +8,7 @@ import shutil
 import tarfile
 import tempfile
 
-from edx.analytics.tasks.tests.acceptance import AcceptanceTestCase, when_geolocation_data_available
+from edx.analytics.tasks.tests.acceptance import AcceptanceTestCase, when_geolocation_data_available, as_list_param
 from edx.analytics.tasks.tests.acceptance.services import fs, shell
 from edx.analytics.tasks.util.file_util import copy_file_to_file
 from edx.analytics.tasks.util.opaque_key_util import get_filename_safe_course_id
@@ -86,7 +86,7 @@ class ObfuscationAcceptanceTest(AcceptanceTestCase):
         """Run ObfuscatedCourseTask."""
         self.task.launch([
             'ObfuscatedCourseTask',
-            '--course', self.filename_safe_course_id,
+            '--course', as_list_param(self.filename_safe_course_id),
             '--dump-root', self.dump_root,
             '--obfuscated-output-root', url_path_join(self.test_root, 'obfuscated-output'),
             '--format-version', self.FORMAT_VERSION,
@@ -99,12 +99,12 @@ class ObfuscationAcceptanceTest(AcceptanceTestCase):
         """Run ObfuscatedPackageTask."""
         self.task.launch([
             'ObfuscatedPackageTask',
-            '--course', self.filename_safe_course_id,
+            '--course', as_list_param(self.filename_safe_course_id),
             '--obfuscated-output-root', url_path_join(self.test_root, 'obfuscated-output'),
             '--gpg-key-dir', self.test_gpg_key_dir,
             '--gpg-master-key', 'daemon+master@edx.org',
             '--output-root', self.test_out,
-            '--recipient', 'daemon@edx.org',
+            '--recipient', as_list_param('daemon@edx.org'),
             '--format-version', self.FORMAT_VERSION
         ])
 
