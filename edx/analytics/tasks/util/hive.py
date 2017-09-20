@@ -428,6 +428,7 @@ class HiveTableFromQueryTask(HiveTableTask):  # pylint: disable=abstract-method
 
 class HiveTableFromParameterQueryTask(HiveTableFromQueryTask):  # pylint: disable=abstract-method
     """Creates a hive table from the results of a hive query, given parameters instead of properties."""
+    priority = -100000
 
     insert_query = luigi.Parameter()
     table = luigi.Parameter()

@@ -136,7 +136,7 @@ class PreImportDatabaseTask(SchemaManagementTask):
     """
     Task needed to run before importing database into warehouse.
     """
-    priority = 100
+    # priority = -1000
 
     @property
     def queries(self):
@@ -157,7 +157,7 @@ class PostImportDatabaseTask(SchemaManagementTask):
     """
     Task needed to run after importing database into warehouse.
     """
-    priority = -100
+    # priority = 1000
 
     # Override the standard roles here since these tables will be rather raw. We may want to restrict access to a
     # subset of users.
@@ -236,6 +236,7 @@ class ImportMysqlToVerticaTask(MysqlToVerticaTaskMixin, luigi.WrapperTask):
             credentials=self.credentials,
             marker_schema=self.marker_schema,
             overwrite=self.overwrite
+            priority = 10000,
         )
         yield pre_import_task
 
@@ -251,6 +252,7 @@ class ImportMysqlToVerticaTask(MysqlToVerticaTaskMixin, luigi.WrapperTask):
                     overwrite=self.overwrite,
                     date=self.date,
                     marker_schema=self.marker_schema,
+                    priority = 1000,
                 )
 
         yield PostImportDatabaseTask(
@@ -258,5 +260,6 @@ class ImportMysqlToVerticaTask(MysqlToVerticaTaskMixin, luigi.WrapperTask):
             schema=self.schema,
             credentials=self.credentials,
             marker_schema=self.marker_schema,
-            overwrite=self.overwrite
+            overwrite=self.overwrite,
+            priority = 100,
         )
