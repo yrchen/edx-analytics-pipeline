@@ -235,7 +235,7 @@ class ImportMysqlToVerticaTask(MysqlToVerticaTaskMixin, luigi.WrapperTask):
             schema=self.schema,
             credentials=self.credentials,
             marker_schema=self.marker_schema,
-            overwrite=self.overwrite
+            overwrite=self.overwrite,
             priority = 10000,
         )
         yield pre_import_task
