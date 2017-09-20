@@ -86,7 +86,7 @@ class ObfuscationAcceptanceTest(AcceptanceTestCase):
         """Run ObfuscatedCourseTask."""
         self.task.launch([
             'ObfuscatedCourseTask',
-            '--course', as_list_param(self.filename_safe_course_id),
+            '--course', self.filename_safe_course_id,
             '--dump-root', self.dump_root,
             '--obfuscated-output-root', url_path_join(self.test_root, 'obfuscated-output'),
             '--format-version', self.FORMAT_VERSION,
@@ -99,7 +99,7 @@ class ObfuscationAcceptanceTest(AcceptanceTestCase):
         """Run ObfuscatedPackageTask."""
         self.task.launch([
             'ObfuscatedPackageTask',
-            '--course', as_list_param(self.filename_safe_course_id),
+            '--course', self.filename_safe_course_id,
             '--obfuscated-output-root', url_path_join(self.test_root, 'obfuscated-output'),
             '--gpg-key-dir', self.test_gpg_key_dir,
             '--gpg-master-key', 'daemon+master@edx.org',
