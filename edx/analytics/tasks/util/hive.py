@@ -428,16 +428,27 @@ class HiveTableFromQueryTask(HiveTableTask):  # pylint: disable=abstract-method
 
 class HiveTableFromParameterQueryTask(HiveTableFromQueryTask):  # pylint: disable=abstract-method
     """Creates a hive table from the results of a hive query, given parameters instead of properties."""
-    priority = -100000
 
     insert_query = luigi.Parameter()
     table = luigi.Parameter()
     columns = luigi.ListParameter()
     partition = HivePartitionParameter()
 
+    def set_required(self, required_table_tasks):
+        self.required_table_tasks = required_table_tasks
+
+    def requires(self):
+        requirements = super(HiveTableFromParameterQueryTask, self).requires()
+        requirements['other_tables'] = self.required_table_tasks
+        return requirements
+
 
 class HiveQueryToMysqlTask(WarehouseMixin, MysqlInsertTask):
     """Populates a MySQL table with the results of a hive query."""
+
+    def __init__(self, *args, **kwargs):
+        super(HiveQueryToMysqlTask, self).__init__(*args, **kwargs)
+        self.source_task = None
 
     overwrite = luigi.BoolParameter(
         default=True,
@@ -461,14 +472,18 @@ class HiveQueryToMysqlTask(WarehouseMixin, MysqlInsertTask):
 
     @property
     def insert_source_task(self):
-        return HiveTableFromParameterQueryTask(
-            warehouse_path=self.warehouse_path,
-            insert_query=self.query,
-            table=self.table,
-            columns=self.hive_columns,
-            partition=self.partition,
-            overwrite=self.hive_overwrite,
-        )
+        if self.source_task is None:
+            self.source_task = HiveTableFromParameterQueryTask(
+                warehouse_path=self.warehouse_path,
+                insert_query=self.query,
+                table=self.table,
+                columns=self.hive_columns,
+                partition=self.partition,
+                overwrite=self.hive_overwrite,
+            )
+            self.source_task.set_required(self.required_table_tasks)
+
+        return self.source_task
 
     def requires(self):
         # MysqlInsertTask customizes requires() somewhat, so don't clobber that logic. Instead allow subclasses to
