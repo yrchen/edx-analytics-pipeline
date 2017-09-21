@@ -216,6 +216,7 @@ class ImportMysqlToVerticaTask(MysqlToVerticaTaskMixin, luigi.WrapperTask):
     def __init__(self, *args, **kwargs):
         super(ImportMysqlToVerticaTask, self).__init__(*args, **kwargs)
         self.table_list = []
+        self.is_complete = False
 
     def should_exclude_table(self, table_name):
         """Determines whether to exlude a table during the import."""
@@ -225,6 +226,8 @@ class ImportMysqlToVerticaTask(MysqlToVerticaTaskMixin, luigi.WrapperTask):
 
     # def requires(self):
     def run(self):
+        # Add yields of tasks in run() method, to serve as dynamic dependencies.
+        # This method should be rerun each time it yields a job.
         if not self.table_list:
             results = get_mysql_query_results(self.db_credentials, self.database, 'show tables')
             self.table_list = [result[0].strip() for result in results]
@@ -259,3 +262,7 @@ class ImportMysqlToVerticaTask(MysqlToVerticaTaskMixin, luigi.WrapperTask):
             marker_schema=self.marker_schema,
             overwrite=self.overwrite,
         )
+        self.is_complete = True
+        
+    def complete(self):
+        return self.is_complete
