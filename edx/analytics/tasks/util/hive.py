@@ -434,13 +434,18 @@ class HiveTableFromParameterQueryTask(HiveTableFromQueryTask):  # pylint: disabl
     columns = luigi.ListParameter()
     partition = HivePartitionParameter()
 
+    def __init__(self, *args, **kwargs):
+        super(HiveTableFromParameterQueryTask, self).__init__(*args, **kwargs)
+        self.requirements = None
+
     def set_required(self, required_table_tasks):
         self.required_table_tasks = required_table_tasks
 
     def requires(self):
-        requirements = super(HiveTableFromParameterQueryTask, self).requires()
-        requirements['other_tables'] = self.required_table_tasks
-        return requirements
+        if self.requirements is not None:
+            self.requirements = list(super(HiveTableFromParameterQueryTask, self).requires())
+            self.requirements.extend(self.required_table_tasks)
+        return self.requirements
 
 
 class HiveQueryToMysqlTask(WarehouseMixin, MysqlInsertTask):
